@@ -30,7 +30,10 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
       fog: { day: "videos/cloudy-day.mp4", night: "videos/cloudy-night.mp4" },
       wind: { day: "videos/cloudy-day.mp4", night: "videos/cloudy-night.mp4" },
       default: { day: "videos/clear-day.mp4", night: "videos/clear-night.mp4" }
-    }
+    },
+    performanceProfile: "auto", // auto | pi | full
+    pauseWhileHidden: false,
+    reduceMotion: false
   },
 
   // ---------------------------------------------------------------------------
@@ -54,6 +57,13 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
     this.spriteMeta = { type: "video", playbackRate: this.config.videoPlaybackRate || 1 };
     this.spriteUrl = null;
     this.videoEl = null;
+    this.performanceProfile = this.resolvePerformanceProfile();
+    this.lowMotion =
+      this.config.reduceMotion === true ||
+      this.performanceProfile === "pi" ||
+      (typeof window !== "undefined" &&
+        window.matchMedia &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 
     // Set an initial backdrop so something renders before weather notifications land.
     this.applyScene("default", false);
@@ -85,7 +95,8 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
     video.loop = true;
     video.playsInline = true;
     video.autoplay = true;
-    video.setAttribute("preload", "auto");
+    video.disablePictureInPicture = true;
+    video.setAttribute("preload", this.lowMotion ? "metadata" : "auto");
 
     const tint = document.createElement("div");
     tint.className = "mmm-awb__tint";
@@ -297,6 +308,7 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
     const isVideo = this.spriteMeta.type === "video";
 
     this.videoEl.style.transitionDuration = `${this.config.transitionSpeed}ms`;
+    this.rootEl?.classList.remove("awb-fallback");
 
     if (isVideo) {
       if (this.spriteUrl) {
@@ -309,7 +321,14 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
         this.videoEl.playsInline = true;
         this.videoEl.autoplay = true;
         this.videoEl.loop = true;
-        this.videoEl.playbackRate = this.spriteMeta.playbackRate || 1;
+        this.videoEl.onerror = () => {
+          Log.error(`[${this.name}] Failed to load video ${this.spriteUrl}, falling back to static background.`);
+          if (this.rootEl) this.rootEl.classList.add("awb-fallback");
+        };
+        const playbackRate = this.lowMotion
+          ? Math.min(this.spriteMeta.playbackRate || 1, 0.85)
+          : this.spriteMeta.playbackRate || 1;
+        this.videoEl.playbackRate = playbackRate;
         this.videoEl.oncanplay = () => {
           this.videoEl.play().catch((err) => {
             Log.warn(`[${this.name}] Video playback failed: ${err?.message || err}`);
@@ -407,11 +426,33 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
   },
 
   suspend() {
-    // Keep playing during suspend to avoid restart when modules animate between pages.
-    // No-op by design. Also avoid clearing scene signature.
+    if (!this.videoEl || !this.config.pauseWhileHidden) return;
+    if (!this.videoEl.paused) {
+      this.wasPlaying = true;
+      this.videoEl.pause();
+    }
   },
 
   resume() {
-    // No-op; playback continues from suspend.
+    if (!this.videoEl || !this.config.pauseWhileHidden) return;
+    if (this.wasPlaying && this.videoEl.paused) {
+      this.videoEl.play().catch((err) => {
+        Log.warn(`[${this.name}] Video resume failed: ${err?.message || err}`);
+      });
+    }
+    this.wasPlaying = false;
+  },
+
+  resolvePerformanceProfile() {
+    const requested = (this.config.performanceProfile || "auto").toLowerCase();
+    if (requested === "pi" || requested === "full") return requested;
+    const ua =
+      typeof navigator !== "undefined" && navigator.userAgent ? navigator.userAgent : "";
+    const isPi =
+      ua.includes("raspberry") ||
+      ua.includes("armv7") ||
+      ua.includes("aarch64") ||
+      ua.includes("linux arm");
+    return isPi ? "pi" : "full";
   }
 });
