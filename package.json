@@ -1,0 +1,9 @@
+{
+  "name": "MMM-AnimatedWeatherBackgrounds",
+  "version": "1.0.0",
+  "description": "Full-screen animated weather video backdrops for MagicMirror.",
+  "main": "MMM-AnimatedWeatherBackgrounds.js",
+  "scripts": {
+    "test": "node --test"
+  }
+}
