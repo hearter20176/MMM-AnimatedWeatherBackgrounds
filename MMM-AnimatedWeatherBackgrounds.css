@@ -1,10 +1,10 @@
+/* stylelint-disable selector-class-pattern -- MagicMirror module class names (mmm-awb__*) are not kebab-case */
+
 .mmm-awb {
   position: fixed;
   inset: 0;
   width: 100vw;
   height: 100vh;
-  min-width: 1080px;
-  min-height: 1920px;
   overflow: hidden;
   pointer-events: none;
   z-index: 0;
@@ -17,20 +17,43 @@
   height: 100%;
   object-fit: cover;
   filter: blur(var(--awb-blur));
-  opacity: var(--awb-opacity);
-  transition: opacity 0.8s ease, filter 0.6s ease;
-  display: none;
+  opacity: 0;
+  transition:
+    opacity 0.8s ease,
+    filter 0.6s ease;
 }
 
 .mmm-awb__video.is-visible {
-  display: block;
+  opacity: var(--awb-opacity);
 }
 
 .mmm-awb__tint {
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 50% 40%, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, var(--awb-vignette)) 60%, rgba(0, 0, 0, var(--awb-vignette)) 100%);
-  pointer-events: none;
   width: 100%;
   height: 100%;
+  pointer-events: none;
+  background: radial-gradient(
+    circle at 50% 40%,
+    rgb(0 0 0 / 0%) 0%,
+    rgb(0 0 0 / var(--awb-vignette)) 60%,
+    rgb(0 0 0 / var(--awb-vignette)) 100%
+  );
+}
+
+/* Day theme (body.mm-day, set by MMM-GlassClock): the black vignette + full-opacity
+   video darken the page under the day theme's dark text (--mm-text: #1d2738 in
+   css/custom.css). Swap the vignette for a light veil and dim the video instead of
+   letting it fight the page's light backdrop. */
+body.mm-day .mmm-awb__video.is-visible {
+  opacity: calc(var(--awb-opacity) * 0.8);
+}
+
+body.mm-day .mmm-awb__tint {
+  background: radial-gradient(
+    circle at 50% 40%,
+    rgb(255 255 255 / 0%) 0%,
+    rgb(255 255 255 / var(--awb-day-veil, 35%)) 60%,
+    rgb(255 255 255 / var(--awb-day-veil, 35%)) 100%
+  );
 }

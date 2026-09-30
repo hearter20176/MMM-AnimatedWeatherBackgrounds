@@ -3,19 +3,26 @@
  * Listens to the core weather module (CURRENTWEATHER_TYPE / WEATHER_UPDATED).
  */
 
-/* global Module, Log */
-
 Module.register("MMM-AnimatedWeatherBackgrounds", {
   // ---------------------------------------------------------------------------
   // Defaults
   // ---------------------------------------------------------------------------
   defaults: {
-    position: "fullscreen_below",
     opacity: 0.7,
     blur: "1.5px",
     vignette: 0.32,
     videoPlaybackRate: 1,
     transitionSpeed: 800,
+    // Pi performance controls. performanceProfile: "auto" (detect from user agent),
+    // "pi" (force low-cost rendering) or "full" (force everything on).
+    performanceProfile: "auto",
+    reduceMotion: false,
+    // Crossfade between scenes using two stacked <video> layers. "auto" (default)
+    // crossfades unless performanceProfile resolves to "pi" or reduceMotion is on,
+    // in which case it falls back to a hard cut. true/false force it either way.
+    crossfade: "auto",
+    // Pause the <video> while this module's region is suspended/hidden.
+    pauseWhileHidden: true,
     spriteSheets: {
       clear: { day: "videos/clear-day.mp4", night: "videos/clear-night.mp4" },
       partly_cloudy: {
@@ -23,9 +30,9 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
         night: "videos/partly-cloudy-night.mp4"
       },
       cloudy: { day: "videos/cloudy-day.mp4", night: "videos/cloudy-night.mp4" },
-      rain: { day: "videos/rain-day.mp4", night: "videos/rain-day.mp4" },
-      sleet: { day: "videos/rain-day.mp4", night: "videos/rain-day.mp4" },
-      thunderstorm: { day: "videos/rain-day.mp4", night: "videos/rain-day.mp4" },
+      rain: { day: "videos/rain-day.mp4", night: "videos/rain-night.mp4" },
+      sleet: { day: "videos/sleet-day.mp4", night: "videos/rain-night.mp4" },
+      thunderstorm: { day: "videos/rain-day.mp4", night: "videos/rain-night.mp4" },
       snow: { day: "videos/cloudy-day.mp4", night: "videos/cloudy-night.mp4" },
       fog: { day: "videos/cloudy-day.mp4", night: "videos/cloudy-night.mp4" },
       wind: { day: "videos/cloudy-day.mp4", night: "videos/cloudy-night.mp4" },
@@ -48,15 +55,35 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
 
     this.scene = null;
     this.isNight = false;
+    this.lastIsNightHint = null;
     this.sunTimes = { sunrise: null, sunset: null };
     this.manualOverride = null;
     this.rootEl = null;
     this.spriteMeta = { type: "video", playbackRate: this.config.videoPlaybackRate || 1 };
     this.spriteUrl = null;
-    this.videoEl = null;
+    // Two stacked <video> layers so scene changes can crossfade instead of hard-cutting.
+    // Only one is ever playing/decoding at steady state; see applySprite/startCrossfade.
+    this.videoEls = null;
+    this.activeLayer = 0;
+    this.fade = null;
+    this.suspended = false;
+
+    this.performanceProfile = this.resolvePerformanceProfile();
+    // reduceMotion is opt-in via config; the "pi" profile on its own only
+    // trims blur cost (see getDom), it does not force still frames.
+    this.reduceMotion = this.config.reduceMotion === true;
+    this.crossfade = this.resolveCrossfade();
+
+    // Seed the page theme from body classes (set by MMM-GlassClock) before the
+    // first PAGE_THEME_CHANGED notification arrives.
+    this.pageNight = null;
+    if (typeof document !== "undefined" && document.body) {
+      if (document.body.classList.contains("mm-night")) this.pageNight = true;
+      else if (document.body.classList.contains("mm-day")) this.pageNight = false;
+    }
 
     // Set an initial backdrop so something renders before weather notifications land.
-    this.applyScene("default", false);
+    this.applyScene("default", this.resolveNightFlag(null));
   },
 
   // ---------------------------------------------------------------------------
@@ -65,8 +92,16 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
   getDom() {
     if (this.rootEl) {
       // Reuse existing DOM to avoid unnecessary video reloads during other module animations.
-      if (this.videoEl && this.spriteUrl && this.videoEl.paused) {
-        this.videoEl.play().catch((err) => {
+      const activeEl = this.videoEls && this.videoEls[this.activeLayer];
+      if (
+        activeEl &&
+        this.spriteUrl &&
+        activeEl.paused &&
+        !this.suspended &&
+        !this.reduceMotion &&
+        !this.fade
+      ) {
+        activeEl.play().catch((err) => {
           Log.warn(`[${this.name}] Video resume failed: ${err?.message || err}`);
         });
       }
@@ -76,28 +111,38 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
     const root = document.createElement("div");
     root.className = "mmm-awb";
     root.style.setProperty("--awb-opacity", this.config.opacity);
-    root.style.setProperty("--awb-blur", this.config.blur);
+    root.style.setProperty("--awb-blur", this.performanceProfile === "pi" ? "0px" : this.config.blur);
     root.style.setProperty("--awb-vignette", this.config.vignette);
 
+    const layerA = this.createVideoLayer();
+    const layerB = this.createVideoLayer();
+
+    const tint = document.createElement("div");
+    tint.className = "mmm-awb__tint";
+
+    root.appendChild(layerA);
+    root.appendChild(layerB);
+    root.appendChild(tint);
+
+    this.rootEl = root;
+    this.videoEls = [layerA, layerB];
+    this.activeLayer = 0;
+    this.fade = null;
+    this.applySprite();
+
+    return root;
+  },
+
+  createVideoLayer() {
     const video = document.createElement("video");
     video.className = "mmm-awb__video";
     video.muted = true;
     video.loop = true;
     video.playsInline = true;
-    video.autoplay = true;
+    video.autoplay = !this.reduceMotion && !this.suspended;
     video.setAttribute("preload", "auto");
-
-    const tint = document.createElement("div");
-    tint.className = "mmm-awb__tint";
-
-    root.appendChild(video);
-    root.appendChild(tint);
-
-    this.rootEl = root;
-    this.videoEl = video;
-    this.applySprite();
-
-    return root;
+    video.addEventListener("error", () => this.handleLayerError(video));
+    return video;
   },
 
   // ---------------------------------------------------------------------------
@@ -110,13 +155,26 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
       this.handleWeatherUpdate(payload);
     } else if (notification === "AMBIENT_WEATHER_DATA") {
       this.handleAmbientWeather(payload);
+    } else if (notification === "PAGE_THEME_CHANGED") {
+      this.handlePageThemeChanged(payload);
     } else if (notification === "ANIMATED_WEATHER_BACKGROUND_SET") {
       this.handleManualSet(payload);
     } else if (notification === "ANIMATED_WEATHER_BACKGROUND_CLEAR") {
       this.manualOverride = null;
       if (this.scene) {
-        this.applyScene(this.scene, this.isNight);
+        this.applyScene(this.scene, this.resolveNightFlag(this.lastIsNightHint));
       }
+    }
+  },
+
+  handlePageThemeChanged(payload) {
+    if (!payload || (payload.mode !== "day" && payload.mode !== "night")) return;
+    this.pageNight = payload.mode === "night";
+
+    // Only re-derive night from the page theme when nothing more specific
+    // (explicit weather hint or sun times) is already driving it.
+    if (this.scene && this.lastIsNightHint === null && !(this.sunTimes.sunrise && this.sunTimes.sunset)) {
+      this.applyScene(this.scene, this.resolveNightFlag(null));
     }
   },
 
@@ -128,10 +186,16 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
       sunset: this.parseTimestamp(payload.sunset)
     };
 
-    const isNight =
-      typeof payload.isDaytime === "boolean"
+    // MMM-AmbientWeather defaults isDaytime to true when it has no lat/long to
+    // compute real sun times (its node_helper can't tell day from night then).
+    // Only trust isDaytime when it comes with the sunrise/sunset pair that
+    // backs it; otherwise fall through to sunTimes/page-theme/local-time below.
+    const isNightHint =
+      typeof payload.isDaytime === "boolean" && payload.sunrise && payload.sunset
         ? !payload.isDaytime
-        : this.resolveNightFlag(null);
+        : null;
+    this.lastIsNightHint = isNightHint;
+    const isNight = this.resolveNightFlag(isNightHint);
 
     const type =
       payload.condition ||
@@ -173,6 +237,7 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
     }
 
     const normalized = this.normalizeWeather(type);
+    this.lastIsNightHint = normalized.isNightHint;
     const isNight = this.resolveNightFlag(normalized.isNightHint);
     const sceneKey = normalized.scene;
     this.applyScene(sceneKey, isNight);
@@ -269,8 +334,9 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
 
     if (isSameScene) {
       // Avoid unnecessary reloads when nothing changed (prevents flicker when other modules animate).
-      if (this.videoEl && this.videoEl.paused) {
-        this.videoEl.play().catch((err) => {
+      const activeEl = this.videoEls && this.videoEls[this.activeLayer];
+      if (activeEl && activeEl.paused && !this.suspended && !this.reduceMotion && !this.fade) {
+        activeEl.play().catch((err) => {
           Log.warn(`[${this.name}] Video resume failed: ${err?.message || err}`);
         });
       }
@@ -291,48 +357,254 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
     this.applySprite();
   },
 
+  // ---------------------------------------------------------------------------
+  // Rendering: two-layer crossfade
+  // ---------------------------------------------------------------------------
   applySprite() {
-    if (!this.videoEl) return;
+    // Called once from start() before the DOM exists (no-op then) and again
+    // from getDom()/updateSprite() once the two <video> layers are live.
+    if (!this.videoEls || this.videoEls.length < 2) return;
 
     const isVideo = this.spriteMeta.type === "video";
 
-    this.videoEl.style.transitionDuration = `${this.config.transitionSpeed}ms`;
+    if (!isVideo || !this.spriteUrl) {
+      this.cancelFade();
+      this.videoEls.forEach((el) => {
+        el.pause();
+        el.classList.remove("is-visible");
+      });
+      if (!isVideo && this.spriteUrl) {
+        Log.warn(`[${this.name}] Non-video media is not supported after sprite removal. Given url: ${this.spriteUrl}`);
+      }
+      return;
+    }
 
-    if (isVideo) {
-      if (this.spriteUrl) {
-        const absoluteUrl = new URL(this.spriteUrl, window.location.origin).href;
-        if (this.videoEl.currentSrc !== absoluteUrl && this.videoEl.src !== absoluteUrl) {
-          this.videoEl.src = absoluteUrl;
-          this.videoEl.load();
-        }
-        this.videoEl.muted = true;
-        this.videoEl.playsInline = true;
-        this.videoEl.autoplay = true;
-        this.videoEl.loop = true;
-        this.videoEl.playbackRate = this.spriteMeta.playbackRate || 1;
-        this.videoEl.oncanplay = () => {
-          this.videoEl.play().catch((err) => {
-            Log.warn(`[${this.name}] Video playback failed: ${err?.message || err}`);
-          });
-        };
-        this.videoEl.play().catch((err) => {
+    const absoluteUrl = new URL(this.spriteUrl, window.location.origin).href;
+
+    // Resolve any fade already in progress first, so the layer bookkeeping
+    // below reflects a single settled "current" layer - not a half-applied
+    // fade - before deciding where the new sprite goes. cancelFade() is a
+    // no-op when nothing is fading.
+    this.cancelFade();
+
+    const activeEl = this.videoEls[this.activeLayer];
+    const inactiveIndex = this.activeLayer === 0 ? 1 : 0;
+    const inactiveEl = this.videoEls[inactiveIndex];
+
+    const activeShowingUrl = activeEl.currentSrc === absoluteUrl || activeEl.src === absoluteUrl;
+    const activeHasContent = activeEl.classList.contains("is-visible");
+
+    if (activeShowingUrl && activeHasContent) {
+      // Nothing to do - the visible layer already has this sprite.
+      return;
+    }
+
+    // Crossfade only makes sense when something is already on screen; the very
+    // first load (or a recovery from a fully-cleared state) is a direct load.
+    if (this.crossfade && activeHasContent) {
+      this.startCrossfade(inactiveEl, activeEl, absoluteUrl);
+    } else {
+      this.loadIntoLayer(activeEl, absoluteUrl, !this.suspended);
+      this.releaseLayer(inactiveEl);
+    }
+  },
+
+  // Direct (hard-cut) load into a single layer: used for the first-ever load
+  // and whenever crossfade is disabled/unavailable.
+  loadIntoLayer(el, absoluteUrl, playImmediately) {
+    const alreadyThere = el.currentSrc === absoluteUrl || el.src === absoluteUrl;
+
+    el.muted = true;
+    el.playsInline = true;
+    el.loop = true;
+    el.playbackRate = this.spriteMeta.playbackRate || 1;
+    el.style.transitionDuration = `${this.config.transitionSpeed}ms`;
+
+    if (!alreadyThere) {
+      el.src = absoluteUrl;
+      el.load();
+    }
+    el.classList.add("is-visible");
+
+    if (this.reduceMotion) {
+      // Show the first frame only; never decode a running video. autoplay is
+      // off and play() is never called, so there's no need to seek back to
+      // currentTime 0 - doing that would re-trigger "canplay" in Chromium and
+      // loop forever. Clear the handler before it runs so a second canplay
+      // (which can still fire, e.g. after a source change) is a no-op.
+      el.autoplay = false;
+      el.oncanplay = () => {
+        el.oncanplay = null;
+        el.pause();
+      };
+    } else {
+      // Never autoplay unconditionally - if this load is happening while the
+      // module is suspended (e.g. a hidden MMM-pages page), the browser must
+      // not start decoding/playing on its own. play() is only ever called
+      // explicitly below/in oncanplay, both of which already check suspended.
+      el.autoplay = !this.suspended;
+      el.oncanplay = () => {
+        el.oncanplay = null;
+        if (this.suspended) return;
+        el.play().catch((err) => {
           Log.warn(`[${this.name}] Video playback failed: ${err?.message || err}`);
         });
-        this.videoEl.classList.add("is-visible");
-      } else {
-        this.videoEl.pause();
-        this.videoEl.classList.remove("is-visible");
+      };
+      if (playImmediately) {
+        el.play().catch((err) => {
+          Log.warn(`[${this.name}] Video playback failed: ${err?.message || err}`);
+        });
+      }
+    }
+  },
+
+  // Crossfade: load the new sprite into `incomingEl` (currently the inactive
+  // layer) and, once it can play, fade it in while fading `outgoingEl` out.
+  // The outgoing layer is paused and released only after the fade completes.
+  startCrossfade(incomingEl, outgoingEl, absoluteUrl) {
+    // Any fade already in progress is superseded - resolve it instantly onto
+    // its (still-current) target layer before starting the new one, so we
+    // never end up with two videos decoding or a layer stuck mid-opacity.
+    this.cancelFade();
+
+    const incomingIndex = this.videoEls.indexOf(incomingEl);
+
+    incomingEl.pause();
+    incomingEl.classList.remove("is-visible");
+    incomingEl.muted = true;
+    incomingEl.playsInline = true;
+    incomingEl.loop = true;
+    incomingEl.playbackRate = this.spriteMeta.playbackRate || 1;
+    incomingEl.style.transitionDuration = `${this.config.transitionSpeed}ms`;
+    outgoingEl.style.transitionDuration = `${this.config.transitionSpeed}ms`;
+    // Never autoplay unconditionally - see the matching comment in loadIntoLayer.
+    incomingEl.autoplay = !this.reduceMotion && !this.suspended;
+    incomingEl.src = absoluteUrl;
+    incomingEl.load();
+
+    this.activeLayer = incomingIndex;
+
+    const fadeState = { fromEl: outgoingEl, toEl: incomingEl, timeoutId: null, canplayFired: false };
+    this.fade = fadeState;
+
+    incomingEl.oncanplay = () => {
+      incomingEl.oncanplay = null;
+      // Cancelled/superseded before this fired - do nothing.
+      if (this.fade !== fadeState) return;
+      fadeState.canplayFired = true;
+
+      if (this.reduceMotion) {
+        incomingEl.pause();
+      } else if (!this.suspended) {
+        incomingEl.play().catch((err) => {
+          Log.warn(`[${this.name}] Video playback failed: ${err?.message || err}`);
+        });
+      }
+
+      incomingEl.classList.add("is-visible");
+      outgoingEl.classList.remove("is-visible");
+
+      fadeState.timeoutId = setTimeout(() => {
+        if (this.fade !== fadeState) return;
+        this.releaseLayer(outgoingEl);
+        this.fade = null;
+      }, this.config.transitionSpeed);
+    };
+  },
+
+  // Cancel any in-progress fade. Safe to call when no fade is running.
+  //
+  // If the incoming layer has already reached canplay (it has a decoded
+  // frame to show), promote it to fully visible - it was already becoming
+  // the current scene - and release the layer that was fading out.
+  //
+  // If it hasn't decoded anything yet, promoting it would blank the screen
+  // for however long the next load takes (r4 QA: 150-250ms with rapid scene
+  // changes at startup). There's nothing worth keeping on that layer, so
+  // release *it* instead and keep showing the still-good outgoing layer.
+  cancelFade() {
+    if (!this.fade) return;
+
+    const { fromEl, toEl, timeoutId, canplayFired } = this.fade;
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (canplayFired) {
+      toEl.oncanplay = null;
+      toEl.classList.add("is-visible");
+      fromEl.classList.remove("is-visible");
+      this.releaseLayer(fromEl);
+
+      if (this.reduceMotion) {
+        toEl.pause();
+      } else if (!this.suspended) {
+        toEl.play().catch((err) => {
+          Log.warn(`[${this.name}] Video playback failed: ${err?.message || err}`);
+        });
       }
     } else {
-      this.videoEl.pause();
-      this.videoEl.classList.remove("is-visible");
-      Log.warn(`[${this.name}] Non-video media is not supported after sprite removal. Given url: ${this.spriteUrl}`);
+      // Nothing decoded on toEl yet - throw it away and keep fromEl as the
+      // active/visible layer exactly as it was.
+      this.releaseLayer(toEl);
+      this.activeLayer = this.videoEls.indexOf(fromEl);
+    }
+
+    this.fade = null;
+  },
+
+  // Pause + fully unload a layer so only one video decodes at steady state.
+  releaseLayer(el) {
+    if (!el) return;
+    el.oncanplay = null;
+    el.pause();
+    el.classList.remove("is-visible");
+    el.removeAttribute("src");
+    el.load();
+  },
+
+  handleLayerError(el) {
+    // Capture what actually failed before releaseLayer() clears it - logging
+    // this.spriteUrl here would name whatever the *next* target is, not the
+    // file that errored (they differ whenever this layer was superseded
+    // before it failed).
+    const failedSrc = (el.getAttribute && el.getAttribute("src")) || el.src || "(unknown)";
+    const detail = el.error ? el.error.message || el.error.code : "unknown error";
+    Log.error(`[${this.name}] Failed to load video ${failedSrc}: ${detail}`);
+
+    const isFadeToEl = this.fade && this.fade.toEl === el;
+    const isActiveLayer = this.videoEls && this.videoEls[this.activeLayer] === el;
+
+    if (isFadeToEl) {
+      // Failed mid-fade: drop back to the still-good outgoing layer instead
+      // of hard-cutting away from valid content.
+      const outgoingEl = this.fade.fromEl;
+      if (this.fade.timeoutId) clearTimeout(this.fade.timeoutId);
+      this.fade = null;
+      this.releaseLayer(el);
+      this.activeLayer = this.videoEls.indexOf(outgoingEl);
+    } else {
+      // Either the outgoing side of a fade (already being superseded - it
+      // has nothing left to contribute, just let it go) or a plain hard-cut
+      // failure. Either way, just release it.
+      this.releaseLayer(el);
+    }
+
+    if (!isActiveLayer && !isFadeToEl) {
+      // This layer wasn't the one driving the current or incoming scene
+      // (e.g. the outgoing half of a fade that had already been
+      // superseded) - nothing valid was lost, so don't stomp whatever scene
+      // is still on screen or fading in.
+      return;
+    }
+
+    const fallback = this.lookupSprite("default", this.isNight);
+    if (fallback.url && fallback.url !== this.spriteUrl) {
+      this.updateSprite("default", this.isNight, fallback);
     }
   },
 
   normalizeWeather(type) {
     const raw = (type || "").toLowerCase();
-    const isNightHint = raw.includes("night");
+    const isNightHint = raw.includes("night") ? true : raw.includes("day") ? false : null;
     const isThunder = /thunder|storm/.test(raw);
     const isSnow = /snow/.test(raw);
     const isSleet = /sleet|hail/.test(raw);
@@ -371,7 +643,12 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
       return now < sunrise || now > sunset;
     }
 
-    return false;
+    // Fall back to the page theme (set by MMM-GlassClock from real sun times)
+    // before resorting to a raw local-time guess.
+    if (typeof this.pageNight === "boolean") return this.pageNight;
+
+    const hour = new Date().getHours();
+    return hour < 6 || hour >= 19;
   },
 
   parseTimestamp(value) {
@@ -406,12 +683,50 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
     return /\.(mp4|webm|mov|m4v)(\?.*)?$/i.test(path);
   },
 
+  resolvePerformanceProfile() {
+    const requested = (this.config.performanceProfile || "auto").toLowerCase();
+    if (requested === "pi" || requested === "full") return requested;
+    const ua = (
+      typeof navigator !== "undefined" && navigator.userAgent ? navigator.userAgent : ""
+    ).toLowerCase();
+    const isPi =
+      ua.includes("raspberry") ||
+      ua.includes("armv7") ||
+      ua.includes("aarch64") ||
+      ua.includes("linux arm");
+    return isPi ? "pi" : "full";
+  },
+
+  resolveCrossfade() {
+    const requested = this.config.crossfade;
+    if (requested === true) return true;
+    if (requested === false) return false;
+    // "auto": crossfade unless doing so would cost more than a Pi (or a user
+    // who asked for reduced motion) should pay.
+    if (this.reduceMotion) return false;
+    if (this.performanceProfile === "pi") return false;
+    return true;
+  },
+
   suspend() {
-    // Keep playing during suspend to avoid restart when modules animate between pages.
-    // No-op by design. Also avoid clearing scene signature.
+    this.suspended = true;
+    if (!this.config.pauseWhileHidden || !this.videoEls) return;
+    this.videoEls.forEach((el) => el.pause());
   },
 
   resume() {
-    // No-op; playback continues from suspend.
+    this.suspended = false;
+    if (!this.config.pauseWhileHidden || !this.videoEls || this.reduceMotion) return;
+
+    // Resume whichever layer(s) should be visibly playing: just the active
+    // layer normally, or both sides of an in-progress fade.
+    const layers = this.fade ? [this.fade.fromEl, this.fade.toEl] : [this.videoEls[this.activeLayer]];
+    layers.forEach((el) => {
+      if (el && el.classList.contains("is-visible")) {
+        el.play().catch((err) => {
+          Log.warn(`[${this.name}] Video resume failed: ${err?.message || err}`);
+        });
+      }
+    });
   }
 });
