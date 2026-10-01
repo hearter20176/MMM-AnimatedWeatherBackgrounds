@@ -29,6 +29,28 @@ modules (MagicMirror reads `position` from the module entry itself, not from `co
 }
 ```
 
+### Page-scoped usage (MMM-pages)
+
+To show the backdrop on one page only, give the entry the page class:
+
+```js
+{
+  module: "MMM-AnimatedWeatherBackgrounds",
+  position: "fullscreen_below",
+  classes: "page1",
+  hiddenOnStartup: true, // avoid a boot-time fade over the first page
+  config: {}
+}
+```
+
+MagicMirror fades the module wrapper at the speed MMM-pages passes to `hide()`/`show()` (500 ms by
+default), which is abrupt for a fullscreen video. The module overrides `hide()`/`show()` to use
+`pageFadeDuration` instead, so the fade-out finishes before MagicMirror calls `suspend()` (the video
+keeps playing while it fades, then pauses), and playback starts at the beginning of the fade-in (it
+continues from its current position; the source is never reloaded). Scene changes keep being applied
+while hidden, so the right scene is already loaded when the page appears. Rapid page flicking is
+safe: a show during a pending hide cancels the pause. With `reduceMotion` the switch is instant.
+
 ### Options
 
 | Option | Default | Description |
@@ -41,7 +63,8 @@ modules (MagicMirror reads `position` from the module entry itself, not from `co
 | `crossfade` | `"auto"` | Whether a scene change (e.g. clear -> rain) crossfades between two stacked `<video>` layers instead of swapping `src` on one element. `"auto"` crossfades unless `performanceProfile` resolves to `"pi"` or `reduceMotion` is on, in which case it falls back to a hard cut to save GPU/CPU on constrained hardware. `true` forces the crossfade on regardless of profile; `false` forces a hard cut. Only one layer is ever left playing/decoding once a crossfade completes - the outgoing layer is paused and its `src` released. |
 | `performanceProfile` | `"auto"` | `"auto"` detects a Raspberry Pi from the user agent; `"pi"` or `"full"` force a profile. On `"pi"`, blur is disabled and (unless `crossfade` is forced `true`) scene changes use a hard cut instead of a crossfade. |
 | `reduceMotion` | `false` | When `true`, videos load and show their first frame only; nothing decodes/plays. Also forces a hard cut between scenes unless `crossfade` is forced `true`. |
-| `pauseWhileHidden` | `true` | Pause the video in `suspend()` (e.g. when another MMM-pages page is shown) and resume it in `resume()`. |
+| `pauseWhileHidden` | `true` | Pause the video once the module is hidden (e.g. when another MMM-pages page is shown) and play it again when shown. |
+| `pageFadeDuration` | `1500` | Fade duration (ms) when the module is hidden/shown, replacing the (shorter) speed the caller passes to `hide()`/`show()`. `0` keeps the caller's speed. Ignored (instant) when `reduceMotion` is on. See "Page-scoped usage". |
 | `spriteSheets` | see `MMM-AnimatedWeatherBackgrounds.js` | Map of scene name -> `{ day, night }` video paths (relative to the module folder, or absolute/`http(s)://`/`data:` URLs). Scenes: `clear`, `partly_cloudy`, `cloudy`, `rain`, `sleet`, `thunderstorm`, `snow`, `fog`, `wind`, `default`. |
 
 ## Notifications consumed

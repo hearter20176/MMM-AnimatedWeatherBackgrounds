@@ -23,6 +23,11 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
     crossfade: "auto",
     // Pause the <video> while this module's region is suspended/hidden.
     pauseWhileHidden: true,
+    // Fade duration (ms) used when this module is hidden/shown (e.g. a page-scoped
+    // module under MMM-pages). Replaces the speed MagicMirror passes to hide()/show(),
+    // which is much shorter than a fullscreen video wants. 0 = use MagicMirror's speed.
+    // Ignored (instant) when reduceMotion is on.
+    pageFadeDuration: 1500,
     spriteSheets: {
       clear: { day: "videos/clear-day.mp4", night: "videos/clear-night.mp4" },
       partly_cloudy: {
@@ -708,21 +713,55 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
     return true;
   },
 
+  // MagicMirror's module.hide()/show() fade the module wrapper at the speed the caller
+  // asks for (MMM-pages: 500 ms), then call suspend() after a hide completes and
+  // resume() only after a show completes. Overriding both lets us (1) stretch the
+  // wrapper fade to pageFadeDuration so the fullscreen video doesn't cut, which also
+  // delays suspend() until the fade-out has finished, and (2) start playback at the
+  // start of a show so the video is already moving while it fades in.
+  hide(speed, callback, options) {
+    this._super(this.resolveFadeSpeed(speed), callback, options);
+  },
+
+  show(speed, callback, options) {
+    this._super(this.resolveFadeSpeed(speed), callback, options);
+    // MM clears module.hidden only when the show is actually accepted (a lockString
+    // can refuse it), so only start playing in that case.
+    if (this.hidden === false) this.startPlayback();
+  },
+
+  resolveFadeSpeed(speed) {
+    if (this.reduceMotion) return 0;
+    // A zero/invalid speed means "no animation" (e.g. an initial hide): keep it.
+    if (!(speed > 0)) return speed;
+    const duration = Number(this.config.pageFadeDuration);
+    return duration > 0 ? duration : speed;
+  },
+
   suspend() {
+    // A show can interrupt a hide; MM cancels the hide timer in that case, but be
+    // defensive so a stray suspend never pauses a module that is on screen.
+    if (this.hidden === false) return;
     this.suspended = true;
     if (!this.config.pauseWhileHidden || !this.videoEls) return;
     this.videoEls.forEach((el) => el.pause());
   },
 
   resume() {
+    this.startPlayback();
+  },
+
+  // Shared by show() (start of fade-in) and resume() (end of fade-in); idempotent.
+  startPlayback() {
     this.suspended = false;
     if (!this.config.pauseWhileHidden || !this.videoEls || this.reduceMotion) return;
 
     // Resume whichever layer(s) should be visibly playing: just the active
-    // layer normally, or both sides of an in-progress fade.
+    // layer normally, or both sides of an in-progress fade. play() continues from
+    // the current position; the source is never reloaded here.
     const layers = this.fade ? [this.fade.fromEl, this.fade.toEl] : [this.videoEls[this.activeLayer]];
     layers.forEach((el) => {
-      if (el && el.classList.contains("is-visible")) {
+      if (el && el.paused && el.classList.contains("is-visible")) {
         el.play().catch((err) => {
           Log.warn(`[${this.name}] Video resume failed: ${err?.message || err}`);
         });
