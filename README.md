@@ -3,13 +3,22 @@
 Full-screen looping video backdrops that change with the current weather condition and
 time of day. Meant to sit behind the other modules on a MagicMirror page.
 
+## Screenshot
+
+<p align="center">
+  <img src="docs/screenshot.png" width="405" alt="Partly cloudy daytime background behind a full mirror page"/>
+</p>
+
+*A full portrait page with the partly-cloudy daytime video behind the other Glass modules (calendar
+events are sample data).*
+
 ## Install
 
 No npm dependencies. Clone (or copy) this module into your MagicMirror `modules/` folder:
 
 ```
 cd ~/MagicMirror/modules
-git clone <repo-url> MMM-AnimatedWeatherBackgrounds
+git clone https://github.com/hearter20176/MMM-AnimatedWeatherBackgrounds.git
 ```
 
 ## Config
