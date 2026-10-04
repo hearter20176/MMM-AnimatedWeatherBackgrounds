@@ -21,6 +21,15 @@ cd ~/MagicMirror/modules
 git clone https://github.com/hearter20176/MMM-AnimatedWeatherBackgrounds.git
 ```
 
+## Update
+
+```bash
+cd ~/MagicMirror/modules/MMM-AnimatedWeatherBackgrounds
+git pull
+```
+
+Then restart MagicMirror (for example `pm2 restart MagicMirror`).
+
 ## Config
 
 Use `position: "fullscreen_below"` on the module entry so it renders behind normal
@@ -35,7 +44,7 @@ modules (MagicMirror reads `position` from the module entry itself, not from `co
     blur: "1.5px",
     vignette: 0.32
   }
-}
+},
 ```
 
 ### Page-scoped usage (MMM-pages)
@@ -49,7 +58,7 @@ To show the backdrop on one page only, give the entry the page class:
   classes: "page1",
   hiddenOnStartup: true, // avoid a boot-time fade over the first page
   config: {}
-}
+},
 ```
 
 MagicMirror fades the module wrapper at the speed MMM-pages passes to `hide()`/`show()` (500 ms by

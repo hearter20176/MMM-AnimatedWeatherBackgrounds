@@ -2,8 +2,31 @@
   "name": "MMM-AnimatedWeatherBackgrounds",
   "version": "1.0.0",
   "description": "Full-screen animated weather video backdrops for MagicMirror.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hearter20176/MMM-AnimatedWeatherBackgrounds.git"
+  },
+  "homepage": "https://github.com/hearter20176/MMM-AnimatedWeatherBackgrounds#readme",
+  "bugs": {
+    "url": "https://github.com/hearter20176/MMM-AnimatedWeatherBackgrounds/issues"
+  },
+  "license": "MIT",
+  "author": "hearter20176",
+  "keywords": [
+    "MagicMirror",
+    "weather",
+    "background",
+    "video",
+    "animated"
+  ],
   "main": "MMM-AnimatedWeatherBackgrounds.js",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^17.13.0"
   }
 }
