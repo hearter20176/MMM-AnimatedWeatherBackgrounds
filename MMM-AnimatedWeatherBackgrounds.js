@@ -153,7 +153,7 @@ Module.register("MMM-AnimatedWeatherBackgrounds", {
   // ---------------------------------------------------------------------------
   // Notifications
   // ---------------------------------------------------------------------------
-  notificationReceived(notification, payload, sender) {
+  notificationReceived(notification, payload) {
     if (notification === "CURRENTWEATHER_TYPE") {
       this.handleWeatherType(payload?.type);
     } else if (notification === "WEATHER_UPDATED") {
